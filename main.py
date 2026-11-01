@@ -33,6 +33,9 @@ class PermissionComplexityAnalyzer:
         self.path = Path(path).resolve()
         self.ignore_patterns = ignore_patterns or []
         self.verbose = verbose
+        if verbose:
+            logging.getLogger().setLevel(logging.DEBUG)
+            logging.debug("Verbose output enabled.")
         self.console = Console()  # Use rich for better output
         self.spec = None  # Initialize pathspec for efficient ignoring
 
@@ -72,15 +75,25 @@ class PermissionComplexityAnalyzer:
         """
         try:
             stat_info = os.stat(path)
-            permissions = stat.filemode(stat_info.st_mode)
-            num_groups = len(os.getgroups())  # Example: consider number of groups
+            mode_bits = stat.S_IMODE(stat_info.st_mode)
         except OSError as e:
              logging.error(f"Error getting file stats for {path}: {e}")
              return 0
 
-        # Simplified complexity calculation based on permissions and groups.
-        # More factors can be added, e.g., ACLs, inheritance, etc.
-        complexity = len(permissions) + num_groups
+        # Score formula: the number of permission bits set (the nine
+        # read, write, and execute bits plus the setuid, setgid, and
+        # sticky bits) plus the path depth below the analyzed root.
+        bits_set = bin(mode_bits & 0o7777).count("1")
+        try:
+            rel = Path(path).resolve().relative_to(self.path) if hasattr(self, "path") else Path(path)
+            depth = 0 if str(rel) == "." else len(rel.parts)
+            # For a single file analyzed directly, depth below that file is 0.
+            if self.path.is_file():
+                depth = 0
+        except Exception:
+            depth = 0
+
+        complexity = bits_set + depth
 
         return complexity
 
@@ -94,9 +107,23 @@ class PermissionComplexityAnalyzer:
 
         total_complexity = 0
 
+        if self.path.is_file():
+            complexity = self.calculate_complexity(self.path)
+            total_complexity += complexity
+            table.add_row(str(self.path), str(complexity))
+            self.console.print(table)
+            self.console.print(f"\nTotal Complexity: {total_complexity}", style="bold green")
+            return
+
         try:
-            for root, _, files in os.walk(self.path):
+            for root, dirs, files in os.walk(self.path):
                 root_path = Path(root)
+
+                # Prune ignored directories in place so the walk does not descend into them.
+                dirs[:] = [
+                    d for d in dirs
+                    if not self.is_ignored(str((root_path / d).relative_to(self.path)))
+                ]
 
                 if self.is_ignored(str(root_path.relative_to(self.path))):
                     logging.debug(f"Ignoring directory: {root_path}")
