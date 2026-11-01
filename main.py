@@ -83,8 +83,14 @@ class PermissionComplexityAnalyzer:
         # Score formula: the number of permission bits set (the nine
         # read, write, and execute bits plus the setuid, setgid, and
         # sticky bits) plus the path depth below the analyzed root.
+        # Every set bit weighs the same in this score: setuid counts exactly
+        # like a read bit. Depth is the other half, so on a deep tree the
+        # depth term drowns out the permission term I actually care about.
         bits_set = bin(mode_bits & 0o7777).count("1")
         try:
+            # Resolving the path follows symlinks, so a link pointing outside the
+            # root makes relative_to raise and the depth silently becomes 0 for
+            # that entry instead of the depth it sits at in the walk.
             rel = Path(path).resolve().relative_to(self.path) if hasattr(self, "path") else Path(path)
             depth = 0 if str(rel) == "." else len(rel.parts)
             # For a single file analyzed directly, depth below that file is 0.
@@ -116,6 +122,11 @@ class PermissionComplexityAnalyzer:
             return
 
         try:
+            # os.walk swallows its own errors by default, so a directory I cannot
+            # open adds nothing and leaves no trace in the total. And my ignore
+            # test feeds relative paths like build or src/x.py to git style
+            # patterns, so a pattern written as build/ never matches the plain
+            # directory name I test it against.
             for root, dirs, files in os.walk(self.path):
                 root_path = Path(root)
 
